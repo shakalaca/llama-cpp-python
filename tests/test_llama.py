@@ -5,6 +5,10 @@ import numpy as np
 from scipy.special import log_softmax
 
 from huggingface_hub import hf_hub_download
+try:  # huggingface_hub >=0.14
+    from huggingface_hub.utils import LocalEntryNotFoundError
+except ImportError:  # pragma: no cover - older hub versions
+    LocalEntryNotFoundError = FileNotFoundError  # type: ignore
 
 import pytest
 
@@ -60,10 +64,18 @@ def test_llama_cpp_tokenization():
 def llama_cpp_model_path():
     repo_id = "Qwen/Qwen2-0.5B-Instruct-GGUF"
     filename = "qwen2-0_5b-instruct-q8_0.gguf"
-    model_path = hf_hub_download(repo_id, filename)
-    return model_path
+    try:
+        return hf_hub_download(repo_id, filename, local_files_only=True)
+    except LocalEntryNotFoundError:
+        try:
+            return hf_hub_download(repo_id, filename, local_files_only=False)
+        except Exception as exc:
+            pytest.skip(f"requires network access to download model: {exc}")
+    except Exception as exc:
+        pytest.skip(f"unable to load cached model: {exc}")
 
 
+@pytest.mark.slow
 def test_real_model(llama_cpp_model_path):
     import os
     assert os.path.exists(llama_cpp_model_path)
@@ -114,6 +126,7 @@ def test_real_model(llama_cpp_model_path):
     output_text = model.detokenize(output, special=True)
     assert output_text == b" over the lazy dog"
 
+@pytest.mark.slow
 def test_real_llama(llama_cpp_model_path):
     model = llama_cpp.Llama(
         llama_cpp_model_path,
@@ -218,6 +231,7 @@ root ::= "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9" | "10"
     assert number_1 == number_3
 
 
+@pytest.mark.slow
 def test_real_llama_embeddings(llama_cpp_model_path):
     model = llama_cpp.Llama(
         llama_cpp_model_path,

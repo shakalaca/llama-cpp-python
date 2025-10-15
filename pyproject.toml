@@ -80,3 +80,6 @@ Changelog = "https://llama-cpp-python.readthedocs.io/en/latest/changelog/"
 
 [tool.pytest.ini_options]
 testpaths = "tests"
+markers = [
+    "slow: marks tests that require network or long downloads",
+]
