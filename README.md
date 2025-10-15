@@ -28,6 +28,10 @@ This package provides:
 
 Documentation is available at [https://llama-cpp-python.readthedocs.io/en/latest](https://llama-cpp-python.readthedocs.io/en/latest).
 
+> Note:
+> - Low-level C API examples should use `llama_model_load_from_file` and `llama_init_from_model` (deprecated: `llama_new_context_with_model`).
+> - `flash_attn` has been replaced by `flash_attn_type` in `llama_context_params`. Use the provided enum constants `LLAMA_FLASH_ATTN_TYPE_AUTO`, `LLAMA_FLASH_ATTN_TYPE_DISABLED`, and `LLAMA_FLASH_ATTN_TYPE_ENABLED`. A boolean shim `flash_attn` remains for backward compatibility.
+
 ## Installation
 
 Requirements:
@@ -718,14 +722,34 @@ Below is a short example demonstrating how to use the low-level API to tokenize 
 import llama_cpp
 import ctypes
 llama_cpp.llama_backend_init(False) # Must be called once at the start of each program
-params = llama_cpp.llama_context_default_params()
-# use bytes for char * params
-model = llama_cpp.llama_load_model_from_file(b"./models/7b/llama-model.gguf", params)
-ctx = llama_cpp.llama_new_context_with_model(model, params)
-max_tokens = params.n_ctx
-# use ctypes arrays for array params
-tokens = (llama_cpp.llama_token * int(max_tokens))()
-n_tokens = llama_cpp.llama_tokenize(ctx, b"Q: Name the planets in the solar system? A: ", tokens, max_tokens, llama_cpp.c_bool(True))
+
+# Load model and create context using the current APIs
+lparams = llama_cpp.llama_model_default_params()
+model = llama_cpp.llama_model_load_from_file(b"./models/7b/llama-model.gguf", lparams)
+
+cparams = llama_cpp.llama_context_default_params()
+ctx = llama_cpp.llama_init_from_model(model, cparams)
+
+# Get vocab to use tokenization helpers
+vocab = llama_cpp.llama_model_get_vocab(model)
+
+# Prepare output buffer
+max_tokens = 128
+out_tokens = (llama_cpp.llama_token * max_tokens)()
+
+# Tokenize bytes input
+text = b"Q: Name the planets in the solar system? A: "
+n = llama_cpp.llama_tokenize(
+    vocab,
+    text,
+    len(text),
+    out_tokens,
+    max_tokens,
+    True,   # add_special
+    False,  # parse_special
+)
+print("n_tokens:", n)
+
 llama_cpp.llama_free(ctx)
 ```
 

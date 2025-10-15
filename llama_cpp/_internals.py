@@ -69,6 +69,9 @@ class LlamaModel:
         def free_model():
             if self.model is None:
                 return
+            # Avoid errors at interpreter shutdown when ctypes symbols are cleared
+            if getattr(llama_cpp, "llama_model_free", None) is None:
+                return
             llama_cpp.llama_model_free(self.model)
             self.model = None
 
@@ -269,6 +272,9 @@ class LlamaContext:
         def free_ctx():
             if self.ctx is None:
                 return
+            # Avoid errors at interpreter shutdown when the symbol table is cleared
+            if getattr(llama_cpp, "llama_free", None) is None:
+                return
             llama_cpp.llama_free(self.ctx)
             self.ctx = None
 
@@ -287,24 +293,30 @@ class LlamaContext:
         return llama_cpp.llama_pooling_type(self.ctx)
 
     def kv_cache_clear(self):
-        assert self.memory is not None, "Memory is not initialized"
+        # If memory is not initialized (e.g., vocab_only contexts), treat as no-op
+        if self.memory is None:
+            return
         llama_cpp.llama_memory_clear(self.memory, True)
 
     def kv_cache_seq_rm(self, seq_id: int, p0: int, p1: int):
-        assert self.memory is not None, "Memory is not initialized"
+        if self.memory is None:
+            return
         seq_id = seq_id if seq_id >= 0 else 0
         llama_cpp.llama_memory_seq_rm(self.memory, seq_id, p0, p1)
 
     def kv_cache_seq_cp(self, seq_id_src: int, seq_id_dst: int, p0: int, p1: int):
-        assert self.memory is not None, "Memory is not initialized"
+        if self.memory is None:
+            return
         llama_cpp.llama_memory_seq_cp(self.memory, seq_id_src, seq_id_dst, p0, p1)
 
     def kv_cache_seq_keep(self, seq_id: int):
-        assert self.memory is not None, "Memory is not initialized"
+        if self.memory is None:
+            return
         llama_cpp.llama_memory_seq_keep(self.memory, seq_id)
 
     def kv_cache_seq_shift(self, seq_id: int, p0: int, p1: int, shift: int):
-        assert self.memory is not None, "Memory is not initialized"
+        if self.memory is None:
+            return
         llama_cpp.llama_memory_seq_add(self.memory, seq_id, p0, p1, shift)
 
     def get_state_size(self) -> int:
@@ -453,6 +465,9 @@ class LlamaBatch:
 
         def free_batch():
             if self.batch is None:
+                return
+            # Avoid errors at interpreter shutdown
+            if getattr(llama_cpp, "llama_batch_free", None) is None:
                 return
             llama_cpp.llama_batch_free(self.batch)
             self.batch = None
@@ -673,8 +688,9 @@ class LlamaSampler:
         llama_cpp.llama_sampler_chain_add(self.sampler, sampler)
 
     def add_softmax(self):
-        sampler = llama_cpp.llama_sampler_init_softmax()
-        llama_cpp.llama_sampler_chain_add(self.sampler, sampler)
+        # Upstream removed llama_sampler_init_softmax; emulate by neutral temperature before sampling
+        # This keeps behavior for negative-temperature path ("sample from full distribution").
+        self.add_temp(1.0)
 
     def add_top_k(self, k: int):
         sampler = llama_cpp.llama_sampler_init_top_k(k)

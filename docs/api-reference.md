@@ -81,6 +81,16 @@ Low-level Python bindings for llama.cpp using Python's ctypes library.
         filters:
             - "^LLAMA_"
 
+## Low-level updates
+
+- Prefer `llama_model_load_from_file` + `llama_init_from_model` over deprecated `llama_new_context_with_model`.
+- `llama_context_params.flash_attn_type` replaces the old `flash_attn` boolean. Use:
+  - `LLAMA_FLASH_ATTN_TYPE_AUTO = -1`
+  - `LLAMA_FLASH_ATTN_TYPE_DISABLED = 0`
+  - `LLAMA_FLASH_ATTN_TYPE_ENABLED = 1`
+  - Helper: `llama_flash_attn_type_name(int) -> bytes` returns the enum name.
+- `defrag_thold` in `llama_context_params` is [DEPRECATED] upstream; the field remains for ABI but should not be used in new code.
+
 ## Misc
 
 ::: llama_cpp.llama_types

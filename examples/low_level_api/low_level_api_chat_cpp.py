@@ -79,14 +79,14 @@ specified) expect poor results""",
         self.lparams.use_mlock = self.params.use_mlock
         self.lparams.use_mmap = self.params.use_mmap
 
-        self.model = llama_cpp.llama_load_model_from_file(
+        self.model = llama_cpp.llama_model_load_from_file(
             self.params.model.encode("utf8"), self.lparams
         )
 
         # Context Params.
         self.cparams = llama_cpp.llama_context_default_params()
 
-        self.ctx = llama_cpp.llama_new_context_with_model(self.model, self.cparams)
+        self.ctx = llama_cpp.llama_init_from_model(self.model, self.cparams)
         if not self.ctx:
             raise RuntimeError(f"error: failed to load model '{self.params.model}'")
 

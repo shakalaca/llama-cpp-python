@@ -13,8 +13,16 @@ prompt = b"\n\n### Instruction:\nWhat is the capital of France?\n\n### Response:
 
 lparams = llama_cpp.llama_model_default_params()
 cparams = llama_cpp.llama_context_default_params()
-model = llama_cpp.llama_load_model_from_file(MODEL_PATH.encode("utf-8"), lparams)
-ctx = llama_cpp.llama_new_context_with_model(model, cparams)
+# prefer new loader
+model = llama_cpp.llama_model_load_from_file(MODEL_PATH.encode("utf-8"), lparams)
+# create context using updated API
+ctx = llama_cpp.llama_init_from_model(model, cparams)
+
+# optional: print device memory breakdown
+try:
+    llama_cpp.llama_memory_breakdown_print(ctx)
+except Exception:
+    pass
 
 # determine the required inference memory per token:
 tmp = [0, 1, 2, 3]

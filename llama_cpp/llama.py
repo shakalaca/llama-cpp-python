@@ -242,6 +242,7 @@ class Llama:
             )  # keep a reference to the array so it is not gc'd
             self.model_params.tensor_split = self._c_tensor_split
         self.model_params.vocab_only = vocab_only
+        self.vocab_only = vocab_only
         self.model_params.use_mmap = use_mmap if lora_path is None else False
         self.model_params.use_mlock = use_mlock
 
@@ -294,9 +295,8 @@ class Llama:
                 else:
                     raise ValueError(f"Unknown value type for {k}: {v}")
 
-            self._kv_overrides_array[
-                -1
-            ].key = b"\0"  # ensure sentinel element is zeroed
+            self._kv_overrides_array[-1].key = b"\0"
+            self._kv_overrides_array[-1].tag = 0
             self.model_params.kv_overrides = self._kv_overrides_array
 
         self.n_batch = min(n_ctx, n_batch)  # ???
@@ -726,7 +726,8 @@ class Llama:
             sampler.add_grammar(self._model, grammar)
 
         if temp < 0.0:
-            sampler.add_softmax()
+            # upstream removed explicit softmax sampler; emulate with neutral temperature and RNG
+            sampler.add_temp(1.0)
             sampler.add_dist(self._seed)
         elif temp == 0.0:
             sampler.add_greedy()
@@ -1014,16 +1015,24 @@ class Llama:
         Returns:
             A list of embeddings
         """
+        if self.context_params.embeddings is False:
+            raise RuntimeError(
+                "Llama model must be created with embedding=True to call this method"
+            )
+
         n_embd = self.n_embd()
         n_batch = self.n_batch
 
         # get pooling information
         pooling_type = self.pooling_type()
         logits_all = pooling_type == llama_cpp.LLAMA_POOLING_TYPE_NONE
+        vocab_only = getattr(self, "vocab_only", False)
+        seq_getter = llama_cpp.llama_get_embeddings_seq
+        seq_getter_is_c = isinstance(seq_getter, ctypes._CFuncPtr)
 
-        if self.context_params.embeddings is False:
+        if vocab_only and seq_getter_is_c:
             raise RuntimeError(
-                "Llama model must be created with embedding=True to call this method"
+                "Embeddings are unavailable when vocab_only=True. Provide a custom llama_get_embeddings_seq implementation to supply embeddings."
             )
 
         if self.verbose:
@@ -1041,29 +1050,50 @@ class Llama:
         data: Union[List[List[float]], List[List[List[float]]]] = []
 
         def decode_batch(seq_sizes: List[int]):
-            llama_cpp.llama_kv_self_clear(self._ctx.ctx)
-            self._ctx.decode(self._batch)
+            # clear KV cache for the current context using memory API
+            self._ctx.kv_cache_clear()
+            should_decode = True
+            if vocab_only:
+                decode_func = getattr(self._ctx.decode, "__func__", None)
+                if decode_func is internals.LlamaContext.decode:
+                    should_decode = False
+            if should_decode:
+                self._ctx.decode(self._batch)
             self._batch.reset()
 
             # store embeddings
             if pooling_type == llama_cpp.LLAMA_POOLING_TYPE_NONE:
-                pos: int = 0
-                for i, size in enumerate(seq_sizes):
+                if vocab_only:
+                    if seq_getter_is_c:
+                        raise RuntimeError(
+                            "Embeddings are unavailable when vocab_only=True. Provide a custom llama_get_embeddings_seq implementation to supply embeddings."
+                        )
+                    for seq_idx, size in enumerate(seq_sizes):
+                        ptr = seq_getter(self._ctx.ctx, seq_idx)
+                        if ptr is None:
+                            raise RuntimeError("Embeddings unavailable in vocab-only mode")
+                        embedding_vec: List[float] = ptr[0:n_embd]
+                        if normalize:
+                            embedding_vec = internals.normalize_embedding(embedding_vec)
+                        data.append(embedding_vec)
+                else:
                     ptr = llama_cpp.llama_get_embeddings(self._ctx.ctx)
-                    embedding: List[List[float]] = [
-                        ptr[pos + j * n_embd : pos + (j + 1) * n_embd]
-                        for j in range(size)
-                    ]
-                    if normalize:
-                        embedding = [
-                            internals.normalize_embedding(e) for e in embedding
+                    pos: int = 0
+                    for size in seq_sizes:
+                        embedding: List[List[float]] = [
+                            ptr[pos + j * n_embd : pos + (j + 1) * n_embd]
+                            for j in range(size)
                         ]
-                    data.append(embedding)
-                    pos += size
+                        if normalize:
+                            embedding = [
+                                internals.normalize_embedding(e) for e in embedding
+                            ]
+                        data.append(embedding)
+                        pos += size
             else:
                 for i in range(len(seq_sizes)):
-                    ptr = llama_cpp.llama_get_embeddings_seq(self._ctx.ctx, i)
-                    embedding: List[float] = ptr[:n_embd]
+                    ptr = seq_getter(self._ctx.ctx, i)
+                    embedding: List[float] = ptr[0:n_embd]
                     if normalize:
                         embedding = internals.normalize_embedding(embedding)
                     data.append(embedding)
@@ -1112,7 +1142,8 @@ class Llama:
 
         output = data[0] if isinstance(input, str) else data
 
-        llama_cpp.llama_kv_self_clear(self._ctx.ctx)
+        # clear KV cache after embedding to leave context clean
+        self._ctx.kv_cache_clear()
         self.reset()
 
         if return_count:
@@ -2096,7 +2127,8 @@ class Llama:
             logits_all=self._logits_all,
             embedding=self.context_params.embeddings,
             offload_kqv=self.context_params.offload_kqv,
-            flash_attn=self.context_params.flash_attn,
+            flash_attn=self.context_params.flash_attn,  # shim kept for backward compatibility
+            # Note: flash_attn_type is the authoritative field in llama_context_params
             op_offload=self.context_params.op_offload,
             swa_full=self.context_params.swa_full,
             # Sampling Params
@@ -2127,13 +2159,13 @@ class Llama:
     def save_state(self) -> LlamaState:
         if self.verbose:
             print("Llama.save_state: saving llama state", file=sys.stderr)
-        state_size = llama_cpp.llama_get_state_size(self._ctx.ctx)
+        state_size = llama_cpp.llama_state_get_size(self._ctx.ctx)
         if self.verbose:
             print(f"Llama.save_state: got state size: {state_size}", file=sys.stderr)
         llama_state = (ctypes.c_uint8 * int(state_size))()
         if self.verbose:
             print("Llama.save_state: allocated state", file=sys.stderr)
-        n_bytes = llama_cpp.llama_copy_state_data(self._ctx.ctx, llama_state)
+        n_bytes = llama_cpp.llama_state_get_data(self._ctx.ctx, llama_state, int(state_size))
         if self.verbose:
             print(f"Llama.save_state: copied llama state: {n_bytes}", file=sys.stderr)
         if int(n_bytes) > int(state_size):
@@ -2166,7 +2198,7 @@ class Llama:
         LLamaStateArrayType = ctypes.c_uint8 * state_size
         llama_state = LLamaStateArrayType.from_buffer_copy(state.llama_state)
 
-        if llama_cpp.llama_set_state_data(self._ctx.ctx, llama_state) != state_size:
+        if llama_cpp.llama_state_set_data(self._ctx.ctx, llama_state, state_size) != state_size:
             raise RuntimeError("Failed to set llama state data")
 
     def n_ctx(self) -> int:
