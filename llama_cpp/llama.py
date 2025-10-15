@@ -25,6 +25,7 @@ from typing import (
     Deque,
     Callable,
     Dict,
+    Iterable,
 )
 from collections import deque
 from pathlib import Path
@@ -2426,6 +2427,10 @@ class LogitsProcessorList(List[LogitsProcessor]):
         for processor in self:
             scores = processor(input_ids, scores)
         return scores
+
+    def extend(self, processors: Iterable[LogitsProcessor]):
+        super().extend(processors)
+        return self
 
 
 StoppingCriteria = Callable[[npt.NDArray[np.intc], npt.NDArray[np.single]], bool]
